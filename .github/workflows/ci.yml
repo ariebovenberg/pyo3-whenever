@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [rust, pure-python]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # whenever 1.0 or later; the wheel carries the Rust extension, and the
+      # pure-Python backend is selected at import time by the tests.
+      - run: pip install "whenever>=1.0.0b0"
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-features
+        env:
+          PYO3_WHENEVER_TEST_PURE: ${{ matrix.backend == 'pure-python' && '1' || '' }}

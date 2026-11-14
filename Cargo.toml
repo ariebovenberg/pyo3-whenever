@@ -1,0 +1,28 @@
+[package]
+name = "pyo3-whenever"
+version = "0.1.0-alpha.1"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT"
+description = "PyO3 conversions for the whenever datetime library, through its C API"
+repository = "https://github.com/ariebovenberg/pyo3-whenever"
+readme = "README.md"
+keywords = ["pyo3", "python", "datetime", "whenever", "jiff"]
+categories = ["api-bindings", "date-and-time"]
+include = ["src/**", "tests/**", "LICENSE", "README.md"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+pyo3 = "0.29"
+jiff = { version = "0.2", optional = true, default-features = false, features = ["std"] }
+
+[features]
+default = []
+# Conversions between the records and jiff's types.
+jiff-02 = ["dep:jiff"]
+
+[dev-dependencies]
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
+jiff = "0.2"
