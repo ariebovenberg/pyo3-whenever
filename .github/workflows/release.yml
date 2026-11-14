@@ -16,9 +16,17 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rust-lang/crates-io-auth-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No cache: a job that can publish must not restore files written by
+      # other workflow runs. Warnings stay warnings: a lint new in stable
+      # must not block a release that CI already passed.
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+          build-warnings: warn
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
       - run: cargo publish
         env:

@@ -1,0 +1,25 @@
+version: 2
+updates:
+- package-ecosystem: "github-actions"
+  directory: "/"
+  schedule:
+    interval: "weekly"
+  cooldown:
+    default-days: 7
+  groups:
+    actions:
+      patterns: ["*"]
+  commit-message:
+    prefix: "🤖 "
+- package-ecosystem: "cargo"
+  directory: "/"
+  schedule:
+    interval: "weekly"
+  cooldown:
+    default-days: 7
+  # pyo3 and its companion crates must move together
+  groups:
+    rust:
+      patterns: ["*"]
+  commit-message:
+    prefix: "🤖 "
