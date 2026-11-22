@@ -29,7 +29,8 @@ jobs:
       - run: pip install "whenever>=1.0.0b0"
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo clippy --all-targets -- -D warnings
+      # The records alone, without jiff.
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
       - run: cargo test --all-features
         env:
           PYO3_WHENEVER_TEST_PURE: ${{ matrix.backend == 'pure-python' && '1' || '' }}

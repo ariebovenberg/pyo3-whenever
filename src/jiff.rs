@@ -20,13 +20,15 @@
 use crate::records::*;
 use core::fmt;
 use jiff::{
-    SignedDuration, Timestamp, Zoned,
+    SignedDuration, Span, Timestamp, Zoned,
     civil::{self, DateTime},
     tz::{Offset, TimeZone},
 };
 
-/// Why a record and a jiff value do not convert.
+/// Why a record and a jiff value do not convert. New variants may be
+/// added, so a `match` needs a `_` arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The value is outside the target type's range; the string says which
     /// field.
@@ -41,6 +43,8 @@ pub enum Error {
         stored: i32,
         computed: i32,
     },
+    /// An itemized delta with positive and negative components.
+    MixedSign,
     Jiff(jiff::Error),
 }
 
@@ -57,6 +61,7 @@ impl fmt::Display for Error {
                 f,
                 "stored offset {stored}s for {tz_id} but the time zone data gives {computed}s"
             ),
+            Self::MixedSign => f.write_str("components of mixed sign"),
             Self::Jiff(e) => e.fmt(f),
         }
     }
@@ -67,6 +72,12 @@ impl std::error::Error for Error {}
 impl From<jiff::Error> for Error {
     fn from(e: jiff::Error) -> Self {
         Self::Jiff(e)
+    }
+}
+
+impl From<core::convert::Infallible> for Error {
+    fn from(e: core::convert::Infallible) -> Self {
+        match e {}
     }
 }
 
@@ -234,14 +245,19 @@ impl TryFrom<&Zoned> for OffsetDateTime {
     }
 }
 
+/// [`ZonedDateTime::to_zoned`] on the parts of a record, so that the time
+/// zone ID can be borrowed.
+pub(crate) fn zoned(odt: OffsetDateTime, tz_id: Option<&str>) -> Result<Zoned, Error> {
+    let tz = TimeZone::get(tz_id.ok_or(Error::MissingTimeZoneId)?)?;
+    Ok(Timestamp::try_from(odt.instant())?.to_zoned(tz))
+}
+
 impl ZonedDateTime {
     /// The instant in jiff's view of the time zone. The local fields may
     /// differ from the record's when jiff's and whenever's time zone data
     /// disagree; see [`Self::to_zoned_checked`].
     pub fn to_zoned(&self) -> Result<Zoned, Error> {
-        let tz_id = self.tz_id.as_deref().ok_or(Error::MissingTimeZoneId)?;
-        let tz = TimeZone::get(tz_id)?;
-        Ok(Timestamp::try_from(self.instant())?.to_zoned(tz))
+        zoned(self.odt, self.tz_id.as_deref())
     }
 
     /// [`Self::to_zoned`], failing with [`Error::OffsetMismatch`] when
@@ -280,6 +296,96 @@ impl TryFrom<&Zoned> for ZonedDateTime {
             odt: z.try_into()?,
             tz_id: Some(tz_id.to_owned()),
         })
+    }
+}
+
+/// The span of the given years, months, weeks, days, hours, minutes,
+/// seconds, and nanoseconds.
+fn span(units: [i64; 8]) -> Result<Span, Error> {
+    // One negative unit makes a whole jiff span negative, so a mixed-sign
+    // record would come out all negative instead of failing.
+    if units.iter().any(|u| *u > 0) && units.iter().any(|u| *u < 0) {
+        return Err(Error::MixedSign);
+    }
+    let [
+        years,
+        months,
+        weeks,
+        days,
+        hours,
+        minutes,
+        seconds,
+        nanoseconds,
+    ] = units;
+    Ok(Span::new()
+        .try_years(years)?
+        .try_months(months)?
+        .try_weeks(weeks)?
+        .try_days(days)?
+        .try_hours(hours)?
+        .try_minutes(minutes)?
+        .try_seconds(seconds)?
+        .try_nanoseconds(nanoseconds)?)
+}
+
+impl TryFrom<ItemizedDelta> for Span {
+    type Error = Error;
+
+    /// An absent component counts as zero.
+    fn try_from(d: ItemizedDelta) -> Result<Self, Error> {
+        let i = |v: Option<i32>| i64::from(v.unwrap_or(0));
+        span([
+            i(d.years),
+            i(d.months),
+            i(d.weeks),
+            i(d.days),
+            i(d.hours),
+            d.minutes.unwrap_or(0),
+            d.seconds.unwrap_or(0),
+            i(d.nanoseconds),
+        ])
+    }
+}
+
+impl TryFrom<ItemizedDateDelta> for Span {
+    type Error = Error;
+
+    /// An absent component counts as zero.
+    fn try_from(d: ItemizedDateDelta) -> Result<Self, Error> {
+        let i = |v: Option<i32>| i64::from(v.unwrap_or(0));
+        span([i(d.years), i(d.months), i(d.weeks), i(d.days), 0, 0, 0, 0])
+    }
+}
+
+/// `None` for zero.
+fn nonzero<T: Default + PartialEq>(v: T) -> Option<T> {
+    (v != T::default()).then_some(v)
+}
+
+impl From<Span> for ItemizedDelta {
+    /// The nonzero components. Milliseconds and microseconds become seconds
+    /// and nanoseconds. A zero span gives the empty delta. The record may
+    /// exceed whenever's limits, which are narrower than jiff's.
+    fn from(s: Span) -> Self {
+        // A span has one sign, so the remainders below share it.
+        let (ms, us, ns) = (
+            s.get_milliseconds(),
+            s.get_microseconds(),
+            s.get_nanoseconds(),
+        );
+        let sub = (ms % 1_000) * 1_000_000 + (us % 1_000_000) * 1_000 + ns % 1_000_000_000;
+        let second = s.get_seconds() + ms / 1_000 + us / 1_000_000 + ns / 1_000_000_000;
+        Self {
+            years: nonzero(i32::from(s.get_years())),
+            months: nonzero(s.get_months()),
+            weeks: nonzero(s.get_weeks()),
+            days: nonzero(s.get_days()),
+            hours: nonzero(s.get_hours()),
+            minutes: nonzero(s.get_minutes()),
+            seconds: nonzero(second + sub / 1_000_000_000),
+            // Below 10⁹ in magnitude.
+            nanoseconds: nonzero((sub % 1_000_000_000) as i32),
+        }
     }
 }
 
@@ -352,6 +458,34 @@ mod tests {
             SignedDuration::try_from(delta),
             Err(Error::OutOfRange("nanosecond"))
         ));
+    }
+
+    #[test]
+    fn span_units() {
+        let s = Span::new()
+            .seconds(-1)
+            .milliseconds(-1_500)
+            .microseconds(-2_000_001)
+            .nanoseconds(-1_000_000_002);
+        let d = ItemizedDelta::from(s);
+        assert_eq!(d.seconds, Some(-5));
+        assert_eq!(d.nanoseconds, Some(-500_001_002));
+        assert_eq!(ItemizedDelta::from(Span::new()), ItemizedDelta::default());
+        let mixed = ItemizedDelta {
+            days: Some(1),
+            hours: Some(-1),
+            ..ItemizedDelta::default()
+        };
+        assert!(matches!(Span::try_from(mixed), Err(Error::MixedSign)));
+        let negative = ItemizedDelta {
+            days: Some(-1),
+            hours: Some(0),
+            ..ItemizedDelta::default()
+        };
+        assert_eq!(
+            Span::try_from(negative).unwrap().fieldwise(),
+            Span::new().days(-1)
+        );
     }
 
     #[test]

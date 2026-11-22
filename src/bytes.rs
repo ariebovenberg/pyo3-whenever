@@ -10,16 +10,9 @@ fn malformed(type_name: &str) -> pyo3::PyErr {
     PyValueError::new_err(format!("malformed {type_name} bytes from whenever"))
 }
 
-fn u16_at(b: &[u8], i: usize) -> u16 {
-    u16::from_le_bytes([b[i], b[i + 1]])
-}
-
-fn u32_at(b: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
-}
-
-fn i64_at(b: &[u8], i: usize) -> i64 {
-    i64::from_le_bytes(b[i..i + 8].try_into().unwrap())
+/// The payload as an array of the length that the type has.
+fn exact<'a, const N: usize>(b: &'a [u8], type_name: &str) -> PyResult<&'a [u8; N]> {
+    b.try_into().map_err(|_| malformed(type_name))
 }
 
 pub(crate) fn encode_date(d: Date) -> [u8; 4] {
@@ -27,15 +20,17 @@ pub(crate) fn encode_date(d: Date) -> [u8; 4] {
     [y0, y1, d.month, d.day]
 }
 
-pub(crate) fn decode_date(b: &[u8]) -> PyResult<Date> {
-    if b.len() != 4 {
-        return Err(malformed("Date"));
+fn date(b: [u8; 4]) -> Date {
+    let [y0, y1, month, day] = b;
+    Date {
+        year: u16::from_le_bytes([y0, y1]),
+        month,
+        day,
     }
-    Ok(Date {
-        year: u16_at(b, 0),
-        month: b[2],
-        day: b[3],
-    })
+}
+
+pub(crate) fn decode_date(b: &[u8]) -> PyResult<Date> {
+    exact(b, "Date").map(|b| date(*b))
 }
 
 pub(crate) fn encode_time(t: Time) -> [u8; 7] {
@@ -43,16 +38,18 @@ pub(crate) fn encode_time(t: Time) -> [u8; 7] {
     [t.hour, t.minute, t.second, n0, n1, n2, n3]
 }
 
-pub(crate) fn decode_time(b: &[u8]) -> PyResult<Time> {
-    if b.len() != 7 {
-        return Err(malformed("Time"));
+fn time(b: [u8; 7]) -> Time {
+    let [hour, minute, second, nanosecond @ ..] = b;
+    Time {
+        hour,
+        minute,
+        second,
+        nanosecond: u32::from_le_bytes(nanosecond),
     }
-    Ok(Time {
-        hour: b[0],
-        minute: b[1],
-        second: b[2],
-        nanosecond: u32_at(b, 3),
-    })
+}
+
+pub(crate) fn decode_time(b: &[u8]) -> PyResult<Time> {
+    exact(b, "Time").map(|b| time(*b))
 }
 
 pub(crate) fn encode_plain(p: PlainDateTime) -> [u8; 11] {
@@ -62,14 +59,16 @@ pub(crate) fn encode_plain(p: PlainDateTime) -> [u8; 11] {
     out
 }
 
-pub(crate) fn decode_plain(b: &[u8]) -> PyResult<PlainDateTime> {
-    if b.len() != 11 {
-        return Err(malformed("PlainDateTime"));
+fn plain(b: [u8; 11]) -> PlainDateTime {
+    let [d0, d1, d2, d3, t @ ..] = b;
+    PlainDateTime {
+        date: date([d0, d1, d2, d3]),
+        time: time(t),
     }
-    Ok(PlainDateTime {
-        date: decode_date(&b[..4])?,
-        time: decode_time(&b[4..])?,
-    })
+}
+
+pub(crate) fn decode_plain(b: &[u8]) -> PyResult<PlainDateTime> {
+    exact(b, "PlainDateTime").map(|b| plain(*b))
 }
 
 fn encode_second_nanos(second: i64, nanosecond: u32) -> [u8; 12] {
@@ -79,17 +78,23 @@ fn encode_second_nanos(second: i64, nanosecond: u32) -> [u8; 12] {
     out
 }
 
+fn second_nanos(b: [u8; 12]) -> (i64, u32) {
+    let [second @ .., n0, n1, n2, n3] = b;
+    (
+        i64::from_le_bytes(second),
+        u32::from_le_bytes([n0, n1, n2, n3]),
+    )
+}
+
 pub(crate) fn encode_instant(i: Instant) -> [u8; 12] {
     encode_second_nanos(i.epoch_second, i.nanosecond)
 }
 
 pub(crate) fn decode_instant(b: &[u8]) -> PyResult<Instant> {
-    if b.len() != 12 {
-        return Err(malformed("Instant"));
-    }
+    let (epoch_second, nanosecond) = second_nanos(*exact(b, "Instant")?);
     Ok(Instant {
-        epoch_second: i64_at(b, 0),
-        nanosecond: u32_at(b, 8),
+        epoch_second,
+        nanosecond,
     })
 }
 
@@ -98,13 +103,8 @@ pub(crate) fn encode_time_delta(d: TimeDelta) -> [u8; 12] {
 }
 
 pub(crate) fn decode_time_delta(b: &[u8]) -> PyResult<TimeDelta> {
-    if b.len() != 12 {
-        return Err(malformed("TimeDelta"));
-    }
-    Ok(TimeDelta {
-        second: i64_at(b, 0),
-        nanosecond: u32_at(b, 8),
-    })
+    let (second, nanosecond) = second_nanos(*exact(b, "TimeDelta")?);
+    Ok(TimeDelta { second, nanosecond })
 }
 
 pub(crate) fn encode_offset(o: OffsetDateTime) -> [u8; 15] {
@@ -114,14 +114,16 @@ pub(crate) fn encode_offset(o: OffsetDateTime) -> [u8; 15] {
     out
 }
 
-pub(crate) fn decode_offset(b: &[u8]) -> PyResult<OffsetDateTime> {
-    if b.len() != 15 {
-        return Err(malformed("OffsetDateTime"));
+fn offset(b: [u8; 15]) -> OffsetDateTime {
+    let [local @ .., o0, o1, o2, o3] = b;
+    OffsetDateTime {
+        local: plain(local),
+        offset_second: i32::from_le_bytes([o0, o1, o2, o3]),
     }
-    Ok(OffsetDateTime {
-        local: decode_plain(&b[..11])?,
-        offset_second: u32_at(b, 11) as i32,
-    })
+}
+
+pub(crate) fn decode_offset(b: &[u8]) -> PyResult<OffsetDateTime> {
+    exact(b, "OffsetDateTime").map(|b| offset(*b))
 }
 
 pub(crate) fn encode_zoned(z: &ZonedDateTime, tz_id: &str) -> Vec<u8> {
@@ -131,13 +133,11 @@ pub(crate) fn encode_zoned(z: &ZonedDateTime, tz_id: &str) -> Vec<u8> {
     out
 }
 
-pub(crate) fn decode_zoned(b: &[u8]) -> PyResult<ZonedDateTime> {
+/// The local fields and offset, and the time zone ID borrowed from `b`.
+pub(crate) fn decode_zoned(b: &[u8]) -> PyResult<(OffsetDateTime, &str)> {
     let (head, tz_id) = b
-        .split_at_checked(15)
+        .split_first_chunk::<15>()
         .ok_or_else(|| malformed("ZonedDateTime"))?;
     let tz_id = str::from_utf8(tz_id).map_err(|_| malformed("ZonedDateTime"))?;
-    Ok(ZonedDateTime {
-        odt: decode_offset(head)?,
-        tz_id: Some(tz_id.to_owned()),
-    })
+    Ok((offset(*head), tz_id))
 }

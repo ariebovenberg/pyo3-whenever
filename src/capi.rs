@@ -3,7 +3,10 @@
 //! contract and this file follows it.
 #![allow(non_camel_case_types, dead_code)]
 
-use core::ffi::{CStr, c_char, c_int};
+use core::{
+    ffi::{CStr, c_char, c_int, c_void},
+    ptr::NonNull,
+};
 use pyo3::ffi::{PyObject, PyTypeObject};
 
 pub(crate) const CAPSULE_NAME: &CStr = c"whenever.C_API_v1";
@@ -98,6 +101,33 @@ pub(crate) struct Table {
         unsafe extern "C" fn(*const Table, *const Instant, *const c_char, u8) -> *mut PyObject,
     pub zoned_datetime_new:
         unsafe extern "C" fn(*const Table, *const ZonedDateTime, c_int, c_int) -> *mut PyObject,
+}
+
+/// The fields that every build of the table starts with.
+#[repr(C)]
+struct Header {
+    magic: *const c_char,
+    struct_size: i32,
+}
+
+impl Table {
+    /// The table behind the capsule's pointer, or `None` when it is not a
+    /// table that reaches as far as this file's.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is the pointer of the `CAPSULE_NAME` capsule, and the caller
+    /// keeps the module that owns the table alive for `'static`.
+    pub(crate) unsafe fn from_capsule(ptr: NonNull<c_void>) -> Option<&'static Self> {
+        // SAFETY: every build publishes at least the header.
+        let header = unsafe { ptr.cast::<Header>().as_ref() };
+        // SAFETY: `magic` is a static C string.
+        let magic = unsafe { CStr::from_ptr(header.magic) };
+        let complete = usize::try_from(header.struct_size).is_ok_and(|n| n >= size_of::<Self>());
+        // SAFETY: the table is at least as large as `Self`, and it is
+        // immutable once published.
+        (magic == CAPSULE_NAME && complete).then(|| unsafe { ptr.cast::<Self>().as_ref() })
+    }
 }
 
 // The table is immutable once published, and its pointers are owned by the
