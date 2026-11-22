@@ -15,7 +15,7 @@ include = ["src/**", "tests/**", "LICENSE", "README.md"]
 all-features = true
 
 [dependencies]
-pyo3 = "0.29"
+pyo3 = "0.30"
 jiff = { version = "0.2", optional = true, default-features = false, features = ["std"] }
 
 [features]
@@ -25,5 +25,5 @@ default = []
 jiff-02 = ["dep:jiff", "pyo3/jiff-02"]
 
 [dev-dependencies]
-pyo3 = { version = "0.29", features = ["auto-initialize"] }
+pyo3 = { version = "0.30", features = ["auto-initialize"] }
 jiff = "0.2"
